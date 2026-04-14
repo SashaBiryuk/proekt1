@@ -14,6 +14,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   updateProfile: (data: Partial<Profile>) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -82,7 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data } = await supabase
         .from('profiles')
-        .select('*')
+        .select('id, name, email, invite_code, created_at, plan, plan_expires_at')
         .eq('id', authUser.id)
         .single();
 
@@ -162,8 +163,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setProfile(prev => prev ? { ...prev, ...data } : null);
   };
 
+  const refreshProfile = async () => {
+    if (!user) return;
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, name, email, invite_code, created_at, plan, plan_expires_at')
+        .eq('id', user.id)
+        .single();
+      if (data) {
+        setProfile(data as Profile);
+        await AsyncStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(data));
+      }
+    } catch {}
+  };
+
   return (
-    <AuthContext.Provider value={{ session, user, profile, loading, signIn, signUp, signOut, updateProfile, resetPassword }}>
+    <AuthContext.Provider value={{ session, user, profile, loading, signIn, signUp, signOut, updateProfile, resetPassword, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );

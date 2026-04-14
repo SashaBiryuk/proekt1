@@ -19,14 +19,28 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { PLAN_LABELS, PlanKey } from '@/types';
 
 export default function SettingsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { profile, user, signOut } = useAuth();
+  const { profile, user, signOut, refreshProfile } = useAuth();
 
   const inviteCode = profile?.invite_code ?? '—';
   const [codeCopied, setCodeCopied] = useState(false);
+
+  // Extension info
+  const planKey = profile?.plan ?? 'free';
+  const planLabel = PLAN_LABELS[planKey] ?? 'Бесплатная';
+  const planExpiry = (() => {
+    if (planKey === 'free' || !profile?.plan_expires_at) return 'Бессрочно';
+    try {
+      const d = new Date(profile.plan_expires_at);
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' });
+    } catch {
+      return 'Бессрочно';
+    }
+  })();
 
   // Change password modal
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -39,8 +53,63 @@ export default function SettingsScreen() {
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
-  // Subscription modal
+  // Extension modal
   const [showSubModal, setShowSubModal] = useState(false);
+  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [activationCode, setActivationCode] = useState('');
+  const [codeError, setCodeError] = useState('');
+  const [codeSuccess, setCodeSuccess] = useState('');
+  const [redeemingCode, setRedeemingCode] = useState(false);
+
+  const handleRedeemCode = async () => {
+    const trimmed = activationCode.trim().toUpperCase();
+    if (!trimmed) { setCodeError('Введите код активации'); return; }
+    if (!user) return;
+    setCodeError('');
+    setCodeSuccess('');
+    setRedeemingCode(true);
+    try {
+      const { data: codeRow, error: fetchErr } = await supabase
+        .from('activation_codes')
+        .select('*')
+        .eq('code', trimmed)
+        .is('redeemed_by', null)
+        .single();
+
+      if (fetchErr || !codeRow) {
+        setCodeError('Код не найден или уже использован');
+        setRedeemingCode(false);
+        return;
+      }
+
+      const { error: updateErr } = await supabase
+        .from('activation_codes')
+        .update({ redeemed_by: user.id, redeemed_at: new Date().toISOString() })
+        .eq('id', codeRow.id)
+        .is('redeemed_by', null);
+
+      if (updateErr) {
+        setCodeError('Не удалось активировать код. Попробуйте снова.');
+        setRedeemingCode(false);
+        return;
+      }
+
+      await supabase
+        .from('profiles')
+        .update({ plan: codeRow.plan, plan_expires_at: codeRow.expires_at ?? null })
+        .eq('id', user.id);
+
+      await refreshProfile();
+      const planName = PLAN_LABELS[codeRow.plan as PlanKey] ?? codeRow.plan;
+      setCodeSuccess(`Расширение «${planName}» успешно активировано!`);
+      setActivationCode('');
+      setShowCodeInput(false);
+    } catch {
+      setCodeError('Произошла ошибка. Попробуйте снова.');
+    } finally {
+      setRedeemingCode(false);
+    }
+  };
 
   // Delete account
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -201,14 +270,23 @@ export default function SettingsScreen() {
             onPress={() => {}}
             disabled
           />
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <SettingsItem
+            icon="diamond-outline"
+            label={planLabel}
+            sublabel={`Расширение · ${planExpiry}`}
+            colors={colors}
+            onPress={() => {}}
+            disabled
+          />
         </View>
 
         {/* ── Подписка ─────────────────────────── */}
-        <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>ПОДПИСКА</Text>
+        <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>РАСШИРЕНИЕ</Text>
         <View style={[styles.menuCard, { backgroundColor: colors.surface, borderRadius: colors.radius }]}>
           <SettingsItem
             icon="star-outline"
-            label="Платная подписка"
+            label="Платное расширение"
             sublabel="Планы и возможности"
             colors={colors}
             onPress={() => setShowSubModal(true)}
@@ -235,43 +313,61 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
 
-      {/* ── Подписка (Modal) ──────────────────── */}
+      {/* ── Расширение (Modal) ──────────────────── */}
       <Modal
         visible={showSubModal}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setShowSubModal(false)}
+        onRequestClose={() => {
+          setShowSubModal(false);
+          setShowCodeInput(false);
+          setActivationCode('');
+          setCodeError('');
+          setCodeSuccess('');
+        }}
       >
         <View style={[styles.modalRoot, { backgroundColor: colors.background }]}>
           <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
             <View style={{ width: 60 }} />
-            <Text style={[styles.modalTitle, { color: colors.foreground }]}>Подписка</Text>
-            <Pressable onPress={() => setShowSubModal(false)} hitSlop={12} style={{ width: 60, alignItems: 'flex-end' }}>
+            <Text style={[styles.modalTitle, { color: colors.foreground }]}>Расширение</Text>
+            <Pressable
+              onPress={() => {
+                setShowSubModal(false);
+                setShowCodeInput(false);
+                setActivationCode('');
+                setCodeError('');
+                setCodeSuccess('');
+              }}
+              hitSlop={12}
+              style={{ width: 60, alignItems: 'flex-end' }}
+            >
               <Ionicons name="close" size={22} color={colors.mutedForeground} />
             </Pressable>
           </View>
 
-          <ScrollView contentContainerStyle={styles.subContent} showsVerticalScrollIndicator={false}>
+          <ScrollView contentContainerStyle={styles.subContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <Text style={[styles.subHeadline, { color: colors.foreground }]}>
-              Выберите подходящий план
+              Ваш план
             </Text>
             <Text style={[styles.subSubline, { color: colors.mutedForeground }]}>
-              Расширьте возможности вашего планирования поездок
+              Активируйте код, чтобы получить расширенный доступ
             </Text>
 
             {/* Бесплатная */}
-            <View style={[styles.planCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: colors.border, borderWidth: 1 }]}>
+            <View style={[styles.planCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: planKey === 'free' ? '#A5D6A7' : colors.border, borderWidth: planKey === 'free' ? 2 : 1 }]}>
               <View style={styles.planHeader}>
                 <View style={[styles.planIconWrap, { backgroundColor: '#E3F2FD' }]}>
                   <Ionicons name="person-outline" size={22} color="#90CAF9" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.planName, { color: colors.foreground }]}>Бесплатная</Text>
-                  <Text style={[styles.planPrice, { color: colors.mutedForeground }]}>0 ₽ / месяц</Text>
+                  <Text style={[styles.planPrice, { color: colors.mutedForeground }]}>0 ₽</Text>
                 </View>
-                <View style={[styles.planBadge, { backgroundColor: '#A5D6A7' + '33' }]}>
-                  <Text style={[styles.planBadgeText, { color: '#4CAF50' }]}>Активна</Text>
-                </View>
+                {planKey === 'free' && (
+                  <View style={[styles.planBadge, { backgroundColor: '#A5D6A7' + '33' }]}>
+                    <Text style={[styles.planBadgeText, { color: '#4CAF50' }]}>Активна</Text>
+                  </View>
+                )}
               </View>
               <View style={[styles.planDivider, { backgroundColor: colors.border }]} />
               {[
@@ -288,11 +384,13 @@ export default function SettingsScreen() {
             </View>
 
             {/* Премиум */}
-            <View style={[styles.planCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: '#90CAF9', borderWidth: 2 }]}>
-              <View style={[styles.planPopularBanner, { backgroundColor: '#90CAF9' }]}>
-                <Ionicons name="flame" size={12} color="#fff" />
-                <Text style={styles.planPopularText}>Популярный</Text>
-              </View>
+            <View style={[styles.planCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: planKey === 'premium' ? '#A5D6A7' : '#90CAF9', borderWidth: planKey === 'premium' ? 2 : 1 }]}>
+              {planKey !== 'premium' && (
+                <View style={[styles.planPopularBanner, { backgroundColor: '#90CAF9' }]}>
+                  <Ionicons name="flame" size={12} color="#fff" />
+                  <Text style={styles.planPopularText}>Популярный</Text>
+                </View>
+              )}
               <View style={styles.planHeader}>
                 <View style={[styles.planIconWrap, { backgroundColor: '#90CAF9' + '22' }]}>
                   <Ionicons name="star-outline" size={22} color="#90CAF9" />
@@ -301,9 +399,11 @@ export default function SettingsScreen() {
                   <Text style={[styles.planName, { color: colors.foreground }]}>Премиум</Text>
                   <Text style={[styles.planPrice, { color: '#90CAF9' }]}>520 ₽ единоразово</Text>
                 </View>
-                <View style={[styles.planBadge, { backgroundColor: '#90CAF9' + '22' }]}>
-                  <Text style={[styles.planBadgeText, { color: '#90CAF9' }]}>Скоро</Text>
-                </View>
+                {planKey === 'premium' && (
+                  <View style={[styles.planBadge, { backgroundColor: '#A5D6A7' + '33' }]}>
+                    <Text style={[styles.planBadgeText, { color: '#4CAF50' }]}>Активна</Text>
+                  </View>
+                )}
               </View>
               <View style={[styles.planDivider, { backgroundColor: colors.border }]} />
               {[
@@ -320,20 +420,16 @@ export default function SettingsScreen() {
                   <Text style={[styles.planFeatureText, { color: colors.foreground }]}>{f}</Text>
                 </View>
               ))}
-              <Pressable
-                style={[styles.planBtn, { backgroundColor: '#90CAF9', borderRadius: colors.radius - 4, opacity: 0.5 }]}
-                disabled
-              >
-                <Text style={styles.planBtnText}>Скоро будет доступно</Text>
-              </Pressable>
             </View>
 
-            {/* ВИП */}
-            <View style={[styles.planCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: '#FFD700', borderWidth: 2 }]}>
-              <View style={[styles.planPopularBanner, { backgroundColor: '#FFD700' }]}>
-                <Ionicons name="diamond" size={12} color="#fff" />
-                <Text style={styles.planPopularText}>Эксклюзив</Text>
-              </View>
+            {/* VIP */}
+            <View style={[styles.planCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: planKey === 'vip' ? '#A5D6A7' : '#FFD700', borderWidth: planKey === 'vip' ? 2 : 1 }]}>
+              {planKey !== 'vip' && (
+                <View style={[styles.planPopularBanner, { backgroundColor: '#FFD700' }]}>
+                  <Ionicons name="diamond" size={12} color="#fff" />
+                  <Text style={styles.planPopularText}>Эксклюзив</Text>
+                </View>
+              )}
               <View style={styles.planHeader}>
                 <View style={[styles.planIconWrap, { backgroundColor: '#FFF9C4' }]}>
                   <Ionicons name="diamond-outline" size={22} color="#F9A825" />
@@ -342,9 +438,11 @@ export default function SettingsScreen() {
                   <Text style={[styles.planName, { color: colors.foreground }]}>VIP</Text>
                   <Text style={[styles.planPrice, { color: '#F9A825' }]}>1 000 ₽ единоразово</Text>
                 </View>
-                <View style={[styles.planBadge, { backgroundColor: '#FFF9C4' }]}>
-                  <Text style={[styles.planBadgeText, { color: '#F9A825' }]}>Скоро</Text>
-                </View>
+                {planKey === 'vip' && (
+                  <View style={[styles.planBadge, { backgroundColor: '#A5D6A7' + '33' }]}>
+                    <Text style={[styles.planBadgeText, { color: '#4CAF50' }]}>Активна</Text>
+                  </View>
+                )}
               </View>
               <View style={[styles.planDivider, { backgroundColor: colors.border }]} />
               {[
@@ -358,17 +456,64 @@ export default function SettingsScreen() {
                   <Text style={[styles.planFeatureText, { color: colors.foreground }]}>{f}</Text>
                 </View>
               ))}
-              <Pressable
-                style={[styles.planBtn, { backgroundColor: '#F9A825', borderRadius: colors.radius - 4, opacity: 0.5 }]}
-                disabled
-              >
-                <Text style={styles.planBtnText}>Скоро будет доступно</Text>
-              </Pressable>
             </View>
 
-            <Text style={[styles.subFooter, { color: colors.mutedForeground }]}>
-              Платёжная система появится в ближайшем обновлении. Следите за новостями!
-            </Text>
+            {/* ── Код активации ── */}
+            {codeSuccess ? (
+              <View style={[styles.codeSuccessBox, { backgroundColor: '#A5D6A7' + '22', borderRadius: colors.radius - 4 }]}>
+                <Ionicons name="checkmark-circle" size={18} color="#4CAF50" />
+                <Text style={[styles.codeSuccessText, { color: '#4CAF50' }]}>{codeSuccess}</Text>
+              </View>
+            ) : null}
+
+            {showCodeInput ? (
+              <View style={[styles.codeInputCard, { backgroundColor: colors.card, borderRadius: colors.radius, borderColor: colors.border, borderWidth: 1 }]}>
+                <Text style={[styles.codeInputLabel, { color: colors.foreground }]}>Код активации</Text>
+                <View style={[styles.codeInputRow, { borderColor: colors.border, backgroundColor: colors.background, borderRadius: colors.radius - 4 }]}>
+                  <TextInput
+                    value={activationCode}
+                    onChangeText={t => { setActivationCode(t); setCodeError(''); }}
+                    placeholder="Введите код"
+                    placeholderTextColor={colors.mutedForeground}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    style={[styles.codeInputField, { color: colors.foreground }]}
+                  />
+                </View>
+                {codeError ? (
+                  <View style={styles.codeErrRow}>
+                    <Ionicons name="alert-circle-outline" size={14} color={colors.destructive} />
+                    <Text style={[styles.codeErrText, { color: colors.destructive }]}>{codeError}</Text>
+                  </View>
+                ) : null}
+                <View style={styles.codeActions}>
+                  <Pressable
+                    onPress={() => { setShowCodeInput(false); setActivationCode(''); setCodeError(''); }}
+                    style={[styles.codeCancelBtn, { borderColor: colors.border, borderRadius: colors.radius - 4 }]}
+                  >
+                    <Text style={[styles.codeCancelText, { color: colors.mutedForeground }]}>Отмена</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleRedeemCode}
+                    disabled={redeemingCode}
+                    style={[styles.codeSubmitBtn, { backgroundColor: colors.primary, borderRadius: colors.radius - 4, opacity: redeemingCode ? 0.6 : 1 }]}
+                  >
+                    {redeemingCode
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={styles.codeSubmitText}>Активировать</Text>
+                    }
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => { setShowCodeInput(true); setCodeSuccess(''); }}
+                style={[styles.activationBtn, { backgroundColor: colors.primary, borderRadius: colors.radius - 4 }]}
+              >
+                <Ionicons name="key-outline" size={18} color="#fff" />
+                <Text style={styles.planBtnText}>Ввести код активации</Text>
+              </Pressable>
+            )}
           </ScrollView>
         </View>
       </Modal>
@@ -776,9 +921,87 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   planBtnText: {
     fontSize: 15,
+    fontFamily: 'Inter_600SemiBold',
+    color: '#fff',
+  },
+
+  activationBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    marginTop: 4,
+  },
+
+  codeSuccessBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 14,
+  },
+  codeSuccessText: {
+    fontSize: 14,
+    fontFamily: 'Inter_500Medium',
+    flex: 1,
+  },
+
+  codeInputCard: {
+    padding: 16,
+    gap: 12,
+  },
+  codeInputLabel: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  codeInputRow: {
+    borderWidth: 1,
+    paddingHorizontal: 14,
+  },
+  codeInputField: {
+    paddingVertical: Platform.OS === 'ios' ? 13 : 9,
+    fontSize: 16,
+    fontFamily: 'Inter_400Regular',
+    letterSpacing: 2,
+  },
+  codeErrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  codeErrText: {
+    fontSize: 13,
+    fontFamily: 'Inter_400Regular',
+    flex: 1,
+  },
+  codeActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  codeCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  codeCancelText: {
+    fontSize: 14,
+    fontFamily: 'Inter_500Medium',
+  },
+  codeSubmitBtn: {
+    flex: 2,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  codeSubmitText: {
+    fontSize: 14,
     fontFamily: 'Inter_600SemiBold',
     color: '#fff',
   },

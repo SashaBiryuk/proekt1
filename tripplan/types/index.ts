@@ -1,9 +1,19 @@
+export type PlanKey = 'free' | 'premium' | 'vip';
+
+export const PLAN_LABELS: Record<PlanKey, string> = {
+  free:    'Бесплатная',
+  premium: 'Премиум',
+  vip:     'VIP',
+};
+
 export interface Profile {
   id: string;
   name: string;
   email: string;
   invite_code?: string;
   created_at?: string;
+  plan?: PlanKey;
+  plan_expires_at?: string | null;
 }
 
 export interface Trip {
